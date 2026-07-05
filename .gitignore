@@ -1,3 +1,5 @@
 backup.zip
+*.zip
+zips/
 *.log
 .claude/
