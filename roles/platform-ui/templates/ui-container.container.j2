@@ -1,0 +1,18 @@
+# Managed by Ansible — podman quadlet unit (survives reboot, unlike --rm; G-17)
+[Unit]
+Description=Ping Platform UI — {{ item.name }}
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+ContainerName={{ item.name }}
+Image={{ platform_ui_registry }}/{{ item.name }}:{{ platform_ui_image_tag }}
+EnvironmentFile={{ platform_dir }}/platform_env
+PublishPort={{ item.port }}:{{ ui_container_internal_port }}
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+---
+- name: restart ui containers
+  ansible.builtin.systemd:
+    name: "{{ item.name }}.service"
+    daemon_reload: true
+    state: restarted
+  loop: "{{ platform_ui_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: ui_containers_as_systemd
+
+- name: recreate ui containers
+  ansible.builtin.shell: |
+    podman rm -f {{ item.name }} || true
+    podman run -d --name {{ item.name }} --restart=always \
+      -p {{ item.port }}:{{ ui_container_internal_port }} \
+      --env-file {{ platform_dir }}/platform_env \
+      {{ platform_ui_registry }}/{{ item.name }}:{{ platform_ui_image_tag }}
+  loop: "{{ platform_ui_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: not ui_containers_as_systemd

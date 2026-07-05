@@ -1,0 +1,113 @@
+---
+- name: Extract Tomcat
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: extract_zip
+  vars:
+    xz_zip: "{{ installer_zips.tomcat }}"
+    xz_home: "{{ tomcat_home }}"
+
+- name: Extract the AM distribution (war + sample trees)
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: extract_zip
+  vars:
+    xz_zip: "{{ installer_zips.am }}"
+    xz_home: "{{ am_dist_dir }}"
+
+- name: Move the Tomcat HTTP connector to {{ am_port }} (G-08 — 8080 belongs to IDM)
+  ansible.builtin.replace:
+    path: "{{ tomcat_home }}/conf/server.xml"
+    regexp: 'port="8080"'
+    replace: 'port="{{ am_port }}"'
+  notify: restart tomcat
+
+- name: Install setenv.sh (Java 25, absolute truststore path, FBC bootstrap props)
+  ansible.builtin.template:
+    src: setenv.sh.j2
+    dest: "{{ tomcat_home }}/bin/setenv.sh"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0700"          # contains store bind passwords
+  notify: restart tomcat
+
+- name: Locate the AM war inside the distribution
+  ansible.builtin.find:
+    paths: "{{ am_dist_dir }}"
+    patterns: "AM-*.war"
+    recurse: true
+  register: tomcat_am_war
+
+- name: Assert exactly one AM war was found
+  ansible.builtin.assert:
+    that: tomcat_am_war.files | length >= 1
+    fail_msg: "No AM-*.war found under {{ am_dist_dir }} — check {{ installer_zips.am }}."
+
+- name: Deploy am.war
+  ansible.builtin.copy:
+    src: "{{ (tomcat_am_war.files | sort(attribute='path') | first).path }}"
+    dest: "{{ tomcat_home }}/webapps/am.war"
+    remote_src: true
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  notify: restart tomcat
+
+- name: Install the Tomcat/AM systemd unit
+  ansible.builtin.template:
+    src: ping-tomcat.service.j2
+    dest: /etc/systemd/system/{{ tomcat_service_name }}.service
+    mode: "0644"
+  notify: restart tomcat
+
+# --- True passive install (G-29 — supersedes the G-25/G-26/G-27 capture) --
+# AM 8.1's FBC passive install is SELF-INITIALIZING: with the mandatory
+# am.* properties plus AM_TEST_MODE=true (default test keys/secret stores),
+# first boot generates the baseline layer, boot.json,
+# noninteractive-install.properties, keystores, and the root realm's auth
+# wiring, and persists later REST/Amster changes to config/services (the
+# writable deployment layer). Pre-seeding ANY file under config/services
+# (the old G-26 capture approach) makes AM treat itself as already
+# installed, SKIP that initialization, hold all config writes in memory
+# only, and reject every authentication with "Invalid authentication
+# request" (G-28 root cause, field-verified 2026-07-04). So: nothing is
+# pre-created here except the directory itself. The marker for "install
+# happened" is noninteractive-install.properties.
+- name: Check whether the AM passive install has already run
+  ansible.builtin.stat:
+    path: "{{ am_config_dir }}/config/services/noninteractive-install.properties"
+  register: tomcat_am_installed
+
+- name: Assert the config dir is pristine before first boot (G-29)
+  ansible.builtin.command:
+    cmd: find {{ am_config_dir }}/config {{ am_config_dir }}/baseline -type f
+  register: tomcat_am_preexisting
+  changed_when: false
+  failed_when: tomcat_am_preexisting.stdout | length > 0
+  when: not tomcat_am_installed.stat.exists
+
+- name: Wait for DS before starting AM (G-18)
+  ansible.builtin.wait_for:
+    port: "{{ ds_ldaps_port }}"
+    timeout: 60
+
+- name: Enable and start Tomcat/AM
+  ansible.builtin.systemd:
+    name: "{{ tomcat_service_name }}"
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Apply pending Tomcat restarts before the readiness gate
+  ansible.builtin.meta: flush_handlers
+
+# First FBC boot generates the configuration tree in {{ am_config_dir }}
+# (passive install — no configurator). Give it time.
+- name: Wait for AM isAlive.jsp (FBC first boot can take minutes)
+  ansible.builtin.uri:
+    url: "{{ am_internal_url }}/isAlive.jsp"
+    status_code: 200
+  register: tomcat_am_alive
+  retries: 60
+  delay: 5
+  until: tomcat_am_alive.status == 200

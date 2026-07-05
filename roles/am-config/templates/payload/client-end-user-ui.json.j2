@@ -1,0 +1,27 @@
+{
+  "metadata": {
+    "realm": "{{ item.realm }}",
+    "entityType": "OAuth2Clients",
+    "entityId": "{{ oauth_enduser_ui_client_id }}",
+    "pathParams": {},
+    "amsterVersion": "{{ amster_version }}"
+  },
+  "data": {
+    "coreOAuth2ClientConfig": {
+      "status": "Active",
+      "clientType": "Public",
+      "scopes": ["openid", "fr:idm:*"],
+      "defaultScopes": [],
+      "redirectionUris": {{ end_user_ui_redirect_uris | to_json }}
+    },
+    "advancedOAuth2ClientConfig": {
+      "grantTypes": ["authorization_code", "implicit"],
+      "responseTypes": ["code", "token", "id_token"],
+      "tokenEndpointAuthMethod": "none",
+      "isConsentImplied": true
+    },
+    "signEncOAuth2ClientConfig": {
+      "idTokenSignedResponseAlg": "RS256"
+    }
+  }
+}

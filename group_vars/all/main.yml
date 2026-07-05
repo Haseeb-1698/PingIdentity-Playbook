@@ -1,0 +1,209 @@
+---
+# =============================================================================
+# Ping Identity Platform 8.1 — shared identity store sample
+# Non-secret defaults (documented sample values). Everything here is a knob:
+# change a var, change the deployment. Secrets live in group_vars/all/vault.yml.
+# =============================================================================
+
+# --- identity / domain -------------------------------------------------------
+base_domain: example.com
+gateway_host: "platform.{{ base_domain }}"
+am_host: "am.{{ base_domain }}"
+idm_host: "openidm.{{ base_domain }}"
+ds_host: "directory.{{ base_domain }}"
+admin_ui_host: "admin.{{ base_domain }}"
+enduser_ui_host: "enduser.{{ base_domain }}"
+login_ui_host: "login.{{ base_domain }}"
+hosts_entries_ip: 127.0.0.1          # what /etc/hosts maps the names to
+
+platform_hostnames:
+  - "{{ ds_host }}"
+  - "{{ am_host }}"
+  - "{{ idm_host }}"
+  - "{{ gateway_host }}"
+  - "{{ admin_ui_host }}"
+  - "{{ enduser_ui_host }}"
+  - "{{ login_ui_host }}"
+
+# --- ports -------------------------------------------------------------------
+ds_ldaps_port: 1636
+ds_ldap_port: 1389                    # IDM shared repo uses StartTLS here (G-13)
+ds_admin_port: 4444
+am_port: 8081                         # 8080 belongs to IDM (G-08)
+idm_port: 8080
+gateway_http_port: 9080
+gateway_https_port: 9443
+login_ui_port: 8083
+admin_ui_port: 8082
+enduser_ui_port: 8888
+
+# --- derived URLs (define once, reuse everywhere) ----------------------------
+gateway_url: "https://{{ gateway_host }}:{{ gateway_https_port }}"
+am_internal_url: "http://{{ am_host }}:{{ am_port }}/am"
+idm_internal_url: "http://{{ idm_host }}:{{ idm_port }}"
+
+# --- filesystem (canonical hierarchy from the brief) --------------------------
+ping_user: ping
+ping_group: "{{ ping_user }}"
+ping_root: "/home/{{ ping_user }}/ping"
+installer_dir: "{{ ping_root }}/installers"     # operator drops official zips here
+ds_home: "{{ ping_root }}/ds"
+tomcat_home: "{{ ping_root }}/tomcat"
+amster_home: "{{ ping_root }}/amster"
+am_config_dir: "{{ ping_root }}/am-config"      # AM FBC configuration directory
+am_dist_dir: "{{ ping_root }}/am-dist"          # extracted AM zip (war + sample trees)
+idm_home: "{{ ping_root }}/idm"
+gateway_home: "{{ ping_root }}/gateway"
+gateway_instance_dir: "{{ ping_root }}/gateway-conf"   # IG_INSTANCE_DIR (G-14)
+platform_dir: "{{ ping_root }}/platform"
+security_dir: "{{ ping_root }}/security"
+openam_security_dir: "{{ ping_root }}/openam-security"
+tools_dir: "{{ ping_root }}/tools"
+staging_dir: "{{ ping_root }}/.staging"
+
+# --- versions (pin everything) -----------------------------------------------
+java_package: java-25-openjdk         # 8.1 requires Java 25 (G-01)
+java_home: /usr/lib/jvm/java-25-openjdk
+ds_version: "8.1.0"
+am_version: "8.1.0"
+amster_version: "8.1.0"
+idm_version: "8.1.0"
+gateway_version: "2026.3.0"
+tomcat_version: "10.1.55"
+platform_ui_image_tag: "8.0.1"        # DO NOT default to 8.1.0 — gotcha G-17
+platform_ui_registry: gcr.io/forgerock-io
+
+# --- installer zips (names of the operator-supplied files) --------------------
+# These are NOT publicly downloadable; the playbook never attempts a download.
+# installer_src_dir is a CONTROL-node directory; any zip found there is copied
+# to {{ installer_dir }} on the target (missing ones may already be on the
+# target — the common role asserts the full set exists there either way).
+installer_src_dir: "{{ playbook_dir }}/zips"
+installer_zips:
+  ds: "DS-{{ ds_version }}.zip"
+  am: "AM-{{ am_version }}.zip"
+  amster: "Amster-{{ amster_version }}.zip"
+  idm: "IDM-{{ idm_version }}.zip"
+  gateway: "PingGateway-{{ gateway_version }}.zip"
+  tomcat: "apache-tomcat-{{ tomcat_version }}.zip"
+
+# --- IDM shared repo base DN — derived from the idm-repo profile's domain
+# --- (vault_idm_repo_domain: example.com -> dc=openidm,dc=example,dc=com).
+# --- The official repo.ds.json assumes forgerock.io; ours must match the DS
+# --- profile or IDM fails with "No Such Entry: ou=config,dc=openidm,..."
+idm_repo_base_dn: "dc=openidm,dc={{ vault_idm_repo_domain.split('.') | join(',dc=') }}"
+
+# --- realm / platform ---------------------------------------------------------
+platform_realm: alpha
+cookie_domain: "{{ base_domain }}"     # parent domain, or gateway logins loop (G-09)
+
+# --- DS: hostname baked into the server cert (G-05) and profile DNs (docs/02)
+# DS 8.1.0's setup CLI only accepts a single --hostname (repeating it errors:
+# "was included multiple times ... does not allow multiple values"), so the
+# cert SAN is just ds_host. Every LDAPS client in this playbook (AM's
+# am.stores.*.servers, the verify role's ldapsearch) connects via ds_host, not
+# localhost, so this is sufficient — see G-05.
+am_config_root_suffix: "ou=am-config"
+am_identity_root_suffix: "ou=identities"
+am_cts_root_suffix: "ou=famrecords,ou=openam-session,ou=tokens"
+am_config_bind_dn: "uid=am-config,ou=admins,ou=am-config"
+am_identity_bind_dn: "uid=am-identity-bind-account,ou=admins,ou=identities"
+am_cts_bind_dn: "uid=openam_cts,ou=admins,ou=famrecords,ou=openam-session,ou=tokens"
+
+# --- gateway TLS (same deployment ID as DS — G-04/G-14) ------------------------
+gateway_tls_hostnames:
+  - localhost
+  - "{{ gateway_host }}"
+gateway_tls_alias: ssl-key-pair
+gateway_cert_subject_dn: "CN={{ gateway_host }},O=Ping Identity"
+
+# --- AM platform config payload (docs/03 + docs/05, G-10/G-16) -----------------
+enduser_success_url: "{{ gateway_url }}/enduser-ui/?realm=/{{ platform_realm }}"
+external_login_url_root: "{{ gateway_url }}/platform-login"
+external_login_url_alpha: "{{ gateway_url }}/enduser-login"
+
+# Redirect URIs: keep the documented internal set AND the gateway set (docs/05).
+idm_admin_ui_redirect_uris:
+  - "http://{{ idm_host }}:{{ idm_port }}/platform/appAuthHelperRedirect.html"
+  - "http://{{ idm_host }}:{{ idm_port }}/platform/sessionCheck.html"
+  - "http://{{ idm_host }}:{{ idm_port }}/admin/appAuthHelperRedirect.html"
+  - "http://{{ idm_host }}:{{ idm_port }}/admin/sessionCheck.html"
+  - "http://{{ admin_ui_host }}:{{ admin_ui_port }}/appAuthHelperRedirect.html"
+  - "http://{{ admin_ui_host }}:{{ admin_ui_port }}/sessionCheck.html"
+  - "{{ gateway_url }}/platform/appAuthHelperRedirect.html"
+  - "{{ gateway_url }}/platform/sessionCheck.html"
+  - "{{ gateway_url }}/admin/appAuthHelperRedirect.html"
+  - "{{ gateway_url }}/admin/sessionCheck.html"
+  - "{{ gateway_url }}/platform-ui/appAuthHelperRedirect.html"
+  - "{{ gateway_url }}/platform-ui/sessionCheck.html"
+end_user_ui_redirect_uris:
+  - "http://{{ enduser_ui_host }}:{{ enduser_ui_port }}/appAuthHelperRedirect.html"
+  - "http://{{ enduser_ui_host }}:{{ enduser_ui_port }}/sessionCheck.html"
+  - "{{ gateway_url }}/enduser-ui/appAuthHelperRedirect.html"
+  - "{{ gateway_url }}/enduser-ui/sessionCheck.html"
+
+am_cors_accepted_origins:
+  - "http://{{ login_ui_host }}:{{ login_ui_port }}"
+  - "http://{{ admin_ui_host }}:{{ admin_ui_port }}"
+  - "http://{{ enduser_ui_host }}:{{ enduser_ui_port }}"
+  - "http://{{ idm_host }}:{{ idm_port }}"
+  - "{{ gateway_url }}"
+am_cors_accepted_methods: [DELETE, GET, HEAD, PATCH, POST, PUT]
+am_cors_accepted_headers:
+  - accept-api-version
+  - authorization
+  - cache-control
+  - content-type
+  - if-match
+  - if-none-match
+  - user-agent
+  - x-forgerock-transactionid
+  - x-openidm-nosession
+  - x-openidm-password
+  - x-openidm-username
+  - x-requested-with
+am_cors_exposed_headers: [WWW-Authenticate]
+am_cors_max_age: 600
+
+validation_goto_urls_alpha:
+  - "http://{{ admin_ui_host }}:{{ admin_ui_port }}/*"
+  - "http://{{ admin_ui_host }}:{{ admin_ui_port }}/*?*"
+  - "http://{{ login_ui_host }}:{{ login_ui_port }}/*"
+  - "http://{{ login_ui_host }}:{{ login_ui_port }}/*?*"
+  - "http://{{ enduser_ui_host }}:{{ enduser_ui_port }}/*"
+  - "http://{{ enduser_ui_host }}:{{ enduser_ui_port }}/*?*"
+  - "{{ gateway_url }}/*"
+  - "{{ gateway_url }}/*?*"
+validation_goto_urls_root:
+  - "{{ gateway_url }}/*"
+  - "{{ gateway_url }}/*?*"
+
+# --- OAuth 2.0 client names (the documented matrix — G-10) ---------------------
+oauth_rs_client_id: idm-resource-server
+oauth_provisioning_client_id: idm-provisioning
+oauth_admin_ui_client_id: idm-admin-ui
+oauth_enduser_ui_client_id: end-user-ui
+
+# --- systemd service names -----------------------------------------------------
+ds_service_name: ping-ds
+tomcat_service_name: ping-tomcat
+idm_service_name: ping-idm
+gateway_service_name: ping-gateway
+
+# --- Platform UI containers (G-17) ---------------------------------------------
+platform_ui_containers:
+  - name: platform-login-ui
+    port: "{{ login_ui_port }}"
+  - name: platform-admin-ui
+    port: "{{ admin_ui_port }}"
+  - name: platform-enduser-ui
+    port: "{{ enduser_ui_port }}"
+ui_container_internal_port: 8080
+
+# --- toggles --------------------------------------------------------------------
+manage_etc_hosts: true
+manage_firewalld: true
+manage_selinux: true                  # label bin dirs bin_t instead of disabling (G-20)
+ui_containers_as_systemd: true        # podman quadlet units; false = podman run -d --restart=always
+firewall_open_ports:                  # host firewall: only the gateway is public (G-20)
+  - "{{ gateway_https_port }}/tcp"

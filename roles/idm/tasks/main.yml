@@ -1,0 +1,183 @@
+---
+- name: Extract PingIDM
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: extract_zip
+  vars:
+    xz_zip: "{{ installer_zips.idm }}"
+    xz_home: "{{ idm_home }}"
+
+# --- boot.properties (G-13) ----------------------------------------------------
+- name: Set openidm.host
+  ansible.builtin.lineinfile:
+    path: "{{ idm_home }}/resolver/boot.properties"
+    regexp: '^#?\s*openidm\.host='
+    line: "openidm.host={{ idm_host }}"
+  notify: restart idm
+
+- name: Set rs.client.secret (consumed by authentication.json — G-10)
+  ansible.builtin.lineinfile:
+    path: "{{ idm_home }}/resolver/boot.properties"
+    regexp: '^rs\.client\.secret='
+    line: "rs.client.secret={{ vault_rs_client_secret }}"
+  no_log: true
+  notify: restart idm
+
+# --- IDM truststore: trust the DS CA (official procedure, docs/04) -------------
+- name: Ensure security/storepass exists
+  ansible.builtin.copy:
+    content: "{{ vault_idm_truststore_password }}"
+    dest: "{{ idm_home }}/security/storepass"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0600"
+    force: false          # never clobber a storepass IDM shipped/generated
+  no_log: true
+
+- name: Check whether the DS CA is already in IDM's truststore
+  ansible.builtin.command: >-
+    {{ java_home }}/bin/keytool -list -alias ds-ca-cert
+    -keystore {{ idm_home }}/security/truststore
+    -storepass:file {{ idm_home }}/security/storepass
+  register: idm_truststore_check
+  failed_when: false
+  changed_when: false
+
+- name: Import the DS CA into IDM's truststore
+  ansible.builtin.command: >-
+    {{ java_home }}/bin/keytool -importcert -noprompt -alias ds-ca-cert
+    -file {{ openam_security_dir }}/ds-ca-cert.pem
+    -keystore {{ idm_home }}/security/truststore
+    -storepass:file {{ idm_home }}/security/storepass
+  when: idm_truststore_check.rc != 0
+  become_user: "{{ ping_user }}"
+  notify: restart idm
+
+# --- conf/ files: official platform files, templated (G-13) --------------------
+- name: Install repo.ds.json (shared repo over {{ ds_ldap_port }} + StartTLS)
+  ansible.builtin.template:
+    src: repo.ds.json.j2
+    dest: "{{ idm_home }}/conf/repo.ds.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0600"
+  notify: restart idm
+
+- name: Install authentication.json (rsFilter only)
+  ansible.builtin.template:
+    src: authentication.json.j2
+    dest: "{{ idm_home }}/conf/authentication.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0600"
+  notify: restart idm
+
+- name: Install servletfilter-cors.json (official file)
+  ansible.builtin.copy:
+    src: servletfilter-cors.json
+    dest: "{{ idm_home }}/conf/servletfilter-cors.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  notify: restart idm
+
+- name: Install ui.context-admin.json (X-Frame-Options SAMEORIGIN — G-13)
+  ansible.builtin.copy:
+    src: ui.context-admin.json
+    dest: "{{ idm_home }}/conf/ui.context-admin.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  notify: restart idm
+
+- name: Install ui-configuration.json (amUrl via the gateway)
+  ansible.builtin.template:
+    src: ui-configuration.json.j2
+    dest: "{{ idm_home }}/conf/ui-configuration.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  notify: restart idm
+
+# --- themes + anonymous theme access (idm-setup-2 step 9, field-verified:
+# --- without these the enduser/admin SPAs get 403 on config/ui/themerealm).
+- name: Install ui-themerealm.json (official attachment — realm themes)
+  ansible.builtin.copy:
+    src: ui-themerealm.json
+    dest: "{{ idm_home }}/conf/ui-themerealm.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  notify: restart idm
+
+- name: Install the access.json patch helper
+  ansible.builtin.copy:
+    src: patch_access.py
+    dest: "{{ tools_dir }}/patch_access.py"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0750"
+
+- name: Allow anonymous read of config/ui/themerealm (access.json)
+  ansible.builtin.command: >-
+    python3 {{ tools_dir }}/patch_access.py {{ idm_home }}/conf/access.json
+  become_user: "{{ ping_user }}"
+  register: idm_access_patch
+  changed_when: "'CHANGED' in idm_access_patch.stdout"
+  notify: restart idm
+
+# --- managed.json: documented edits to the default file. NEVER add objects
+# --- like teammember (G-17).
+- name: Install the managed.json patch helper
+  ansible.builtin.copy:
+    src: patch_managed.py
+    dest: "{{ tools_dir }}/patch_managed.py"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0750"
+
+- name: Apply the documented managed/user edits
+  ansible.builtin.command: >-
+    python3 {{ tools_dir }}/patch_managed.py {{ idm_home }}/conf/managed.json
+  become_user: "{{ ping_user }}"
+  register: idm_managed_patch
+  changed_when: "'CHANGED' in idm_managed_patch.stdout"
+  notify: restart idm
+
+# --- service -------------------------------------------------------------------
+- name: Install the PingIDM systemd unit
+  ansible.builtin.template:
+    src: ping-idm.service.j2
+    dest: /etc/systemd/system/{{ idm_service_name }}.service
+    mode: "0644"
+  notify: restart idm
+
+- name: Wait for AM before starting IDM (G-18)
+  ansible.builtin.uri:
+    url: "{{ am_internal_url }}/isAlive.jsp"
+    status_code: 200
+  register: idm_am_alive
+  retries: 30
+  delay: 5
+  until: idm_am_alive.status == 200
+
+- name: Enable and start PingIDM
+  ansible.builtin.systemd:
+    name: "{{ idm_service_name }}"
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Apply pending IDM restarts
+  ansible.builtin.meta: flush_handlers
+
+# Anonymous info/ping returns 401 under rsFilter — that still proves the
+# server is up. The authenticated round-trip happens in the verify role (G-21).
+- name: Wait for IDM to answer
+  ansible.builtin.uri:
+    url: "{{ idm_internal_url }}/openidm/info/ping"
+    status_code: [200, 401]
+  register: idm_ping
+  retries: 60
+  delay: 5
+  until: idm_ping.status in [200, 401]

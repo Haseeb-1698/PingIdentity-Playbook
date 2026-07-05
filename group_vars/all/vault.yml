@@ -1,0 +1,43 @@
+---
+# =============================================================================
+# SECRETS — sample values from the official documentation so the playbook runs
+# out of the box. For anything beyond a lab: change them, then encrypt with
+#   ansible-vault encrypt group_vars/all/vault.yml
+# Rule: every credential appears in exactly ONE var and is referenced
+# everywhere it is consumed (see 01-gotchas G-10 — secrets must never drift).
+# =============================================================================
+
+# amAdmin. NOTE (FBC passive install, field-verified 2026-07-04): AM boots
+# with amAdmin password "password" and the AM_PASSWORDS_AMADMIN_CLEAR env var
+# is NOT applied at boot, so this var currently only documents intent — the
+# tweaks helper tries it first and falls back to "password". Configure a real
+# secret store for amAdmin before production use (passive-install docs step 6).
+vault_am_admin_password: Passw0rd
+
+# am.encryption.key for FBC (alphanumeric; a random one is generated if empty,
+# but pinning it keeps re-installs able to read persisted data).
+vault_am_encryption_key: "An4lphaNum3ricEncrypti0nKey"
+
+# PingDS
+vault_ds_root_dn: "uid=admin"
+vault_ds_root_password: str0ngAdm1nPa55word
+vault_ds_monitor_password: str0ngMon1torPa55word
+vault_ds_profile_password: 5up35tr0ng      # am-config / am-cts / am-identity-store bind pwds
+vault_deployment_id_password: password     # dskeymgr deployment-id password (G-04)
+vault_idm_repo_domain: example.com         # idm-repo profile domain parameter
+
+# Truststores
+vault_truststore_password: changeit        # AM truststore (openam-security/truststore)
+vault_idm_truststore_password: changeit    # used only if idm/security/storepass is missing
+
+# PingGateway keystore pin — written to security/keystore.pin WITHOUT a
+# trailing newline (G-14).
+vault_gateway_keystore_pin: password
+
+# OAuth client secrets. Each is consumed in TWO places and must match:
+#   vault_rs_client_secret           == AM client idm-resource-server
+#                                    == IDM authentication.json rs.client.secret
+#   vault_provisioning_client_secret == AM client idm-provisioning
+#                                    == AM IdmIntegrationService provisioningClientSecret
+vault_rs_client_secret: password
+vault_provisioning_client_secret: openidm

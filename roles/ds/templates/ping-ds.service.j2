@@ -1,0 +1,18 @@
+# Managed by Ansible
+[Unit]
+Description=PingDS directory server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User={{ ping_user }}
+Group={{ ping_group }}
+Environment=JAVA_HOME={{ java_home }}
+ExecStart={{ ds_home }}/bin/start-ds --quiet
+ExecStop={{ ds_home }}/bin/stop-ds --quiet
+TimeoutStartSec=300
+LimitNOFILE=131072
+
+[Install]
+WantedBy=multi-user.target

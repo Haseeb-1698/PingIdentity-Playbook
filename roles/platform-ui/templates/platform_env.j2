@@ -1,0 +1,14 @@
+# Managed by Ansible — Platform UI container environment (docs/06)
+AM_URL={{ gateway_url }}/am
+AM_ADMIN_URL={{ gateway_url }}/am/ui-admin
+IDM_REST_URL={{ gateway_url }}/openidm
+# NOT {{ gateway_url }}/admin — IDM 8.1 removed the bundled admin UI (G-12)
+IDM_ADMIN_URL={{ gateway_url }}/platform-ui/
+IDM_UPLOAD_URL={{ gateway_url }}/upload
+IDM_EXPORT_URL={{ gateway_url }}/export
+ENDUSER_UI_URL={{ gateway_url }}/enduser-ui/
+PLATFORM_ADMIN_URL={{ gateway_url }}/platform-ui/
+ENDUSER_CLIENT_ID={{ oauth_enduser_ui_client_id }}
+ADMIN_CLIENT_ID={{ oauth_admin_ui_client_id }}
+THEME=default
+PLATFORM_UI_LOCALE=en

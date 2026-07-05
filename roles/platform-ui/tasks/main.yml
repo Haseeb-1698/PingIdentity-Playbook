@@ -1,0 +1,97 @@
+---
+# Env is read at container START only — any change must recreate/restart the
+# containers (G-17), hence the notify.
+- name: Render platform_env
+  ansible.builtin.template:
+    src: platform_env.j2
+    dest: "{{ platform_dir }}/platform_env"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  notify:
+    - restart ui containers
+    - recreate ui containers
+
+- name: Check which UI images are present
+  ansible.builtin.command: >-
+    podman image exists
+    {{ platform_ui_registry }}/{{ item.name }}:{{ platform_ui_image_tag }}
+  loop: "{{ platform_ui_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: platform_ui_image_check
+  failed_when: false
+  changed_when: false
+
+- name: Pull the UI images (tag pinned — G-17)
+  ansible.builtin.command: >-
+    podman pull
+    {{ platform_ui_registry }}/{{ item.item.name }}:{{ platform_ui_image_tag }}
+  loop: "{{ platform_ui_image_check.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.rc != 0
+
+# --- preferred: podman quadlet units — survive reboots (G-17) -----------------
+- name: Ensure the quadlet directory exists
+  ansible.builtin.file:
+    path: /etc/containers/systemd
+    state: directory
+    mode: "0755"
+  when: ui_containers_as_systemd
+
+- name: Install quadlet container units
+  ansible.builtin.template:
+    src: ui-container.container.j2
+    dest: "/etc/containers/systemd/{{ item.name }}.container"
+    mode: "0644"
+  loop: "{{ platform_ui_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: ui_containers_as_systemd
+  notify: restart ui containers
+
+- name: Reload systemd for quadlet generation
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: ui_containers_as_systemd
+
+- name: Start the UI container services
+  ansible.builtin.systemd:
+    name: "{{ item.name }}.service"
+    state: started
+  loop: "{{ platform_ui_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: ui_containers_as_systemd
+
+# --- fallback: plain podman with --restart=always (never --rm — G-17) ---------
+- name: Ensure UI containers exist (non-systemd mode)
+  ansible.builtin.shell: >-
+    podman container exists {{ item.name }} ||
+    podman run -d --name {{ item.name }} --restart=always
+    -p {{ item.port }}:{{ ui_container_internal_port }}
+    --env-file {{ platform_dir }}/platform_env
+    {{ platform_ui_registry }}/{{ item.name }}:{{ platform_ui_image_tag }}
+  loop: "{{ platform_ui_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: platform_ui_run
+  # `podman run` prints the new container id; nothing printed = already existed
+  changed_when: platform_ui_run.stdout | default('') | length > 0
+  when: not ui_containers_as_systemd
+
+- name: Apply pending UI container restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the three UIs to answer locally
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ item.port }}/"
+    status_code: 200
+  loop: "{{ platform_ui_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: platform_ui_wait
+  retries: 30
+  delay: 5
+  until: platform_ui_wait.status == 200

@@ -1,0 +1,260 @@
+---
+- name: Extract Amster
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: extract_zip
+  vars:
+    xz_zip: "{{ installer_zips.amster }}"
+    xz_home: "{{ amster_home }}"
+
+# Amster authenticates to AM with an SSH key trusted via the FBC config
+# directory's authorized_keys — fully non-interactive, independent of the
+# amAdmin password state on first boot. The iPlanetAMAuthAmsterService default
+# config (am-config/baseline/.../iplanetamauthamsterservice/.../defaultconfig.json)
+# pins this to security/keys/amster/authorized_keys under the config dir, NOT
+# the config dir root — writing it at the top level leaves it silently unread.
+- name: Generate the Amster SSH key
+  ansible.builtin.command: >-
+    ssh-keygen -t rsa -b 3072 -m PEM
+    -f {{ amster_home }}/amster_rsa -N ""
+  args:
+    creates: "{{ amster_home }}/amster_rsa"
+  become_user: "{{ ping_user }}"
+
+- name: Create the Amster keys directory (path AM's AmsterService expects)
+  ansible.builtin.file:
+    path: "{{ am_config_dir }}/security/keys/amster"
+    state: directory
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0750"
+
+- name: Trust the Amster key in AM (FBC authorized_keys)
+  ansible.builtin.copy:
+    src: "{{ amster_home }}/amster_rsa.pub"
+    dest: "{{ am_config_dir }}/security/keys/amster/authorized_keys"
+    remote_src: true
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0600"
+  notify: restart tomcat
+
+# AM/Tomcat is already running by this point (tomcat-am role booted it before
+# authorized_keys existed) and FBC only reads that trust file at JVM startup —
+# without bouncing here, Amster's SSH-key connect fails ("No connection to
+# OpenAM found") and every later Amster step silently no-ops.
+- name: Restart AM now so it picks up the trusted Amster key
+  ansible.builtin.meta: flush_handlers
+
+# Reset (not just create): files removed from am_payload_files must not
+# linger from previous renders, or a re-import would replay them.
+- name: Reset the payload directory
+  ansible.builtin.file:
+    path: "{{ amster_payload_dir }}/config"
+    state: "{{ item }}"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0750"
+  loop: [absent, directory]
+
+- name: Render the Amster config payload
+  ansible.builtin.template:
+    src: "payload/{{ item.src }}.json.j2"
+    dest: "{{ amster_payload_dir }}/config/{{ item.name }}.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0600"
+  loop: "{{ am_payload_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Wait for AM before provisioning (G-18)
+  ansible.builtin.uri:
+    url: "{{ am_internal_url }}/isAlive.jsp"
+    status_code: 200
+  register: am_config_alive
+  retries: 30
+  delay: 5
+  until: am_config_alive.status == 200
+
+# --- diagnostic tooling, staged early so both checkpoints below can use it ----
+# --- (G-28: bisecting whether the platform-payload import breaks root-realm
+# --- authentication needs a before/after snapshot, not another guess).
+- name: Install the AM diagnostics + tweaks helpers
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ tools_dir }}/{{ item }}"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0750"
+  loop:
+    - am_platform_tweaks.py
+    - am_diag_dump.py
+
+- name: Render the tweaks configuration
+  ansible.builtin.template:
+    src: tweaks.json.j2
+    dest: "{{ tools_dir }}/am-tweaks.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0600"
+
+# --- realm creation (guarded — Amster is not idempotent, G-19) ---------------
+- name: Render the realm creation script
+  ansible.builtin.template:
+    src: realm.amster.j2
+    dest: "{{ amster_home }}/realm.amster"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0600"
+
+- name: Create realm {{ platform_realm }}
+  ansible.builtin.command: "{{ amster_home }}/amster {{ amster_home }}/realm.amster"
+  args:
+    creates: "{{ am_config_dir }}/.realm-created"
+  environment:
+    JAVA_HOME: "{{ java_home }}"
+  become_user: "{{ ping_user }}"
+  register: am_realm_out
+  # "Failed to execute" is how the amster CLI reports command errors (rc stays
+  # 0!) — e.g. a missing --global flag. Field-verified: without it here, a
+  # failed realm creation sails through and only surfaces 30 tasks later as
+  # "Realm not found" in the tweaks step.
+  failed_when: >-
+    (am_realm_out.rc | default(0)) != 0
+    or (am_realm_out.stdout | default('')) is search('(?i)(Exception|ERROR|Failed to execute|could not connect|no connection to openam)')
+
+- name: Mark realm created
+  ansible.builtin.file:
+    path: "{{ am_config_dir }}/.realm-created"
+    state: touch
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  when: am_realm_out is not skipped
+
+# --- G-28 checkpoint A: root-realm auth/id-repo state BEFORE the platform
+# --- payload + sample trees import. Compare against checkpoint B below.
+- name: "Diagnostic: snapshot root-realm auth state (pre-import)"
+  ansible.builtin.command: >-
+    python3 {{ tools_dir }}/am_diag_dump.py {{ tools_dir }}/am-tweaks.json
+    {{ tools_dir }}/diag-pre-import.json pre-import
+  become_user: "{{ ping_user }}"
+  changed_when: false
+
+# --- sample trees + platform payload import (guarded — G-19) ------------------
+- name: Check the Amster import marker
+  ansible.builtin.stat:
+    path: "{{ am_config_dir }}/.amster-imported"
+  register: am_import_marker
+
+- name: Import the platform configuration payload
+  when: not am_import_marker.stat.exists
+  block:
+    - name: Locate sample-trees zip in the AM distribution
+      ansible.builtin.find:
+        paths: "{{ am_dist_dir }}"
+        patterns: "sample-trees*.zip"
+        recurse: true
+      register: am_trees_zip
+
+    - name: Assert the sample trees zip was found
+      ansible.builtin.assert:
+        that: am_trees_zip.files | length >= 1
+        fail_msg: "No sample-trees*.zip under {{ am_dist_dir }} — check {{ installer_zips.am }}."
+
+    - name: Reset the trees working directory
+      ansible.builtin.file:
+        path: "{{ amster_payload_dir }}/trees"
+        state: "{{ item }}"
+        owner: "{{ ping_user }}"
+        group: "{{ ping_group }}"
+      loop: [absent, directory]
+
+    - name: Unpack the sample trees
+      ansible.builtin.unarchive:
+        src: "{{ (am_trees_zip.files | sort(attribute='path') | first).path }}"
+        dest: "{{ amster_payload_dir }}/trees"
+        remote_src: true
+        owner: "{{ ping_user }}"
+        group: "{{ ping_group }}"
+
+    - name: Retarget every tree at /{{ platform_realm }} (documented step, easy to miss — G-19)
+      ansible.builtin.shell: >-
+        find "{{ amster_payload_dir }}/trees" -name '*.json' -exec
+        sed -i 's|"realm" *: *"/"|"realm" : "/{{ platform_realm }}"|g' {} +
+      args:
+        executable: /bin/bash
+
+    - name: Locate the AuthTree directory inside the trees payload
+      ansible.builtin.find:
+        paths: "{{ amster_payload_dir }}/trees"
+        patterns: AuthTree
+        file_type: directory
+        recurse: true
+      register: am_authtree_dir
+
+    - name: Assert the AuthTree directory was found
+      ansible.builtin.assert:
+        that: am_authtree_dir.files | length >= 1
+
+    - name: Render the import script
+      ansible.builtin.template:
+        src: import.amster.j2
+        dest: "{{ amster_home }}/import.amster"
+        owner: "{{ ping_user }}"
+        group: "{{ ping_group }}"
+        mode: "0600"
+      vars:
+        am_trees_import_path: "{{ (am_authtree_dir.files | sort(attribute='path') | first).path | dirname }}"
+
+    - name: Run the Amster import (platform payload + trees)
+      ansible.builtin.command: "{{ amster_home }}/amster {{ amster_home }}/import.amster"
+      environment:
+        JAVA_HOME: "{{ java_home }}"
+      become_user: "{{ ping_user }}"
+      register: am_import_out
+      failed_when: >-
+        am_import_out.rc != 0
+        or am_import_out.stdout is search('(?i)(Exception|ERROR|Failed to execute|could not connect|no connection to openam)')
+      notify: restart tomcat
+
+    - name: Mark the import done
+      ansible.builtin.file:
+        path: "{{ am_config_dir }}/.amster-imported"
+        state: touch
+        owner: "{{ ping_user }}"
+        group: "{{ ping_group }}"
+        mode: "0640"
+
+# --- G-28 checkpoint B: root-realm auth/id-repo state right after the import,
+# --- before am_platform_tweaks.py runs its own (separate) authenticate call.
+# --- If amAdmin auth is already broken here, the import itself is the cause —
+# --- diff diag-pre-import.json vs diag-post-import.json to find what changed.
+- name: "Diagnostic: snapshot root-realm auth state (post-import, pre-tweaks)"
+  ansible.builtin.command: >-
+    python3 {{ tools_dir }}/am_diag_dump.py {{ tools_dir }}/am-tweaks.json
+    {{ tools_dir }}/diag-post-import.json post-import-pre-tweaks
+  become_user: "{{ ping_user }}"
+  changed_when: false
+
+# --- post-import REST surgery (GET-modify-PUT; idempotent by inspection) ------
+- name: Apply post-import AM tweaks (trees Success URL, id store, login URLs)
+  ansible.builtin.command: >-
+    python3 {{ tools_dir }}/am_platform_tweaks.py {{ tools_dir }}/am-tweaks.json
+  become_user: "{{ ping_user }}"
+  register: am_tweaks_out
+  changed_when: "'CHANGED:' in am_tweaks_out.stdout"
+  notify: restart tomcat
+
+- name: Bounce Tomcat after the payload (docs/03)
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for AM to come back
+  ansible.builtin.uri:
+    url: "{{ am_internal_url }}/isAlive.jsp"
+    status_code: 200
+  register: am_config_alive2
+  retries: 60
+  delay: 5
+  until: am_config_alive2.status == 200

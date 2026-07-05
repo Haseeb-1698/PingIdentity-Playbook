@@ -1,0 +1,6 @@
+---
+- name: restart idm
+  ansible.builtin.systemd:
+    name: "{{ idm_service_name }}"
+    daemon_reload: true
+    state: restarted

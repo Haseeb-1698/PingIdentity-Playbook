@@ -1,0 +1,76 @@
+---
+# Reusable zip extraction. Callers pass:
+#   xz_zip  — file name inside {{ installer_dir }}
+#   xz_home — final installation directory
+# The archive's single top-level directory (opendj/, openidm/, apache-tomcat-x/,
+# identity-gateway/, ...) is flattened into xz_home, scripts get +x (G-02), and
+# a marker file makes the whole step idempotent.
+- name: "Check whether {{ xz_home }} is already extracted"
+  ansible.builtin.stat:
+    path: "{{ xz_home }}/.ansible-extracted"
+  register: xz_done
+
+- name: "Extract {{ xz_zip }} into {{ xz_home }}"
+  when: not xz_done.stat.exists
+  block:
+    - name: "Create staging directory for {{ xz_zip }}"
+      ansible.builtin.file:
+        path: "{{ staging_dir }}/{{ xz_zip | splitext | first }}"
+        state: directory
+        mode: "0750"
+
+    - name: "Unarchive {{ xz_zip }}"
+      ansible.builtin.unarchive:
+        src: "{{ installer_dir }}/{{ xz_zip }}"
+        dest: "{{ staging_dir }}/{{ xz_zip | splitext | first }}"
+        remote_src: true
+
+    - name: "Flatten archive root into {{ xz_home }}"
+      ansible.builtin.shell: |
+        set -e
+        shopt -s dotglob nullglob
+        stage="{{ staging_dir }}/{{ xz_zip | splitext | first }}"
+        entries=("$stage"/*)
+        if [ -z "${entries[1]:-}" ] && [ -d "${entries[0]}" ]; then
+          srcdir="${entries[0]}"
+        else
+          srcdir="$stage"
+        fi
+        mkdir -p "{{ xz_home }}"
+        cp -a "$srcdir"/. "{{ xz_home }}/"
+      args:
+        executable: /bin/bash
+
+    - name: "Make scripts executable (G-02 — zips ship without +x)"
+      ansible.builtin.shell: >
+        find "{{ xz_home }}" -type f
+        \( -path "*/bin/*" -o -name "*.sh" -o -name amster \)
+        -exec chmod u+x {} +
+      args:
+        executable: /bin/bash
+
+    - name: "Own {{ xz_home }} as {{ ping_user }}"
+      ansible.builtin.file:
+        path: "{{ xz_home }}"
+        owner: "{{ ping_user }}"
+        group: "{{ ping_group }}"
+        recurse: true
+
+    - name: "Re-apply SELinux context to newly extracted files in {{ xz_home }} (G-20)"
+      ansible.builtin.command:
+        cmd: "restorecon -R {{ xz_home }}"
+      when: manage_selinux
+      changed_when: true
+
+    - name: "Write extraction marker"
+      ansible.builtin.file:
+        path: "{{ xz_home }}/.ansible-extracted"
+        state: touch
+        owner: "{{ ping_user }}"
+        group: "{{ ping_group }}"
+        mode: "0640"
+
+    - name: "Remove staging directory"
+      ansible.builtin.file:
+        path: "{{ staging_dir }}/{{ xz_zip | splitext | first }}"
+        state: absent

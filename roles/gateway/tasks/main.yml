@@ -1,0 +1,114 @@
+---
+- name: Extract PingGateway
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: extract_zip
+  vars:
+    xz_zip: "{{ installer_zips.gateway }}"
+    xz_home: "{{ gateway_home }}"
+
+# keystore.pin must hold the password with NO trailing newline (G-14) —
+# copy+content guarantees that; never echo.
+- name: Write the keystore pin
+  ansible.builtin.copy:
+    content: "{{ vault_gateway_keystore_pin }}"
+    dest: "{{ security_dir }}/keystore.pin"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0600"
+  no_log: true
+
+- name: Read back the DS deployment ID (G-04 — same ID as DS)
+  ansible.builtin.slurp:
+    src: "{{ security_dir }}/deployment-id"
+  register: gateway_depid_slurp
+  no_log: true
+
+- name: Generate the gateway TLS key pair
+  vars:
+    gateway_hostname_argv: "{{ ['--hostname'] | product(gateway_tls_hostnames) | map('list') | flatten }}"
+    gateway_tls_argv:
+      - "{{ ds_home }}/bin/dskeymgr"
+      - create-tls-key-pair
+      - "--deploymentId"
+      - "{{ gateway_depid_slurp.content | b64decode | trim }}"
+      - "--deploymentIdPassword"
+      - "{{ vault_deployment_id_password }}"
+      - "--keyStoreFile"
+      - "{{ security_dir }}/keystore"
+      - "--keyStorePassword:file"
+      - "{{ security_dir }}/keystore.pin"
+      - "--subjectDn"
+      - "{{ gateway_cert_subject_dn }}"
+      - "--alias"
+      - "{{ gateway_tls_alias }}"
+  ansible.builtin.command:
+    argv: "{{ gateway_tls_argv + gateway_hostname_argv }}"
+    creates: "{{ security_dir }}/keystore"
+  become_user: "{{ ping_user }}"
+  no_log: true
+
+- name: Export the CA certificate for browser import
+  ansible.builtin.command: >-
+    {{ ds_home }}/bin/dskeymgr export-ca-cert
+    --deploymentId {{ gateway_depid_slurp.content | b64decode | trim }}
+    --deploymentIdPassword {{ vault_deployment_id_password }}
+    --outputFile {{ security_dir }}/ca-cert.pem
+  args:
+    creates: "{{ security_dir }}/ca-cert.pem"
+  become_user: "{{ ping_user }}"
+
+- name: Install admin.json (connectors + secret stores)
+  ansible.builtin.template:
+    src: admin.json.j2
+    dest: "{{ gateway_instance_dir }}/config/admin.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  notify: restart gateway
+
+- name: Install config.json (router + default landing page)
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ gateway_instance_dir }}/config/config.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  notify: restart gateway
+
+- name: Install the routes (conditions must not overlap — G-15)
+  ansible.builtin.template:
+    src: "routes/{{ item }}.json.j2"
+    dest: "{{ gateway_instance_dir }}/config/routes/{{ item }}.json"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  loop:
+    - am
+    - idm
+    - login
+    - enduser-ui
+    - platform-ui
+  notify: restart gateway
+
+- name: Install the PingGateway systemd unit (sets IG_INSTANCE_DIR — G-14)
+  ansible.builtin.template:
+    src: ping-gateway.service.j2
+    dest: /etc/systemd/system/{{ gateway_service_name }}.service
+    mode: "0644"
+  notify: restart gateway
+
+- name: Enable and start PingGateway
+  ansible.builtin.systemd:
+    name: "{{ gateway_service_name }}"
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Apply pending gateway restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the gateway HTTPS listener
+  ansible.builtin.wait_for:
+    port: "{{ gateway_https_port }}"
+    timeout: 180

@@ -1,0 +1,6 @@
+---
+- name: restart tomcat
+  ansible.builtin.systemd:
+    name: "{{ tomcat_service_name }}"
+    daemon_reload: true
+    state: restarted

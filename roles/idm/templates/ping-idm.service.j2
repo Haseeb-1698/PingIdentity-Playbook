@@ -1,0 +1,18 @@
+# Managed by Ansible
+[Unit]
+Description=PingIDM
+After=network-online.target {{ tomcat_service_name }}.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ ping_user }}
+Group={{ ping_group }}
+WorkingDirectory={{ idm_home }}
+Environment=JAVA_HOME={{ java_home }}
+ExecStart=/bin/bash {{ idm_home }}/startup.sh
+TimeoutStartSec=300
+LimitNOFILE=131072
+
+[Install]
+WantedBy=multi-user.target

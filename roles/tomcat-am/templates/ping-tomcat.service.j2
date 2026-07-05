@@ -1,0 +1,20 @@
+# Managed by Ansible
+[Unit]
+Description=Apache Tomcat hosting PingAM (FBC mode)
+After=network-online.target {{ ds_service_name }}.service
+Wants=network-online.target
+Requires={{ ds_service_name }}.service
+
+[Service]
+Type=simple
+User={{ ping_user }}
+Group={{ ping_group }}
+Environment=JAVA_HOME={{ java_home }}
+Environment=CATALINA_HOME={{ tomcat_home }}
+Environment=CATALINA_BASE={{ tomcat_home }}
+ExecStart={{ tomcat_home }}/bin/catalina.sh run
+TimeoutStartSec=600
+LimitNOFILE=131072
+
+[Install]
+WantedBy=multi-user.target

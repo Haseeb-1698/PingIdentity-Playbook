@@ -1,0 +1,104 @@
+---
+# G-21: "everything started" != "it works". Prove each layer and fail loudly.
+
+# 1. DS over LDAPS with the truststore (not --trustAll).
+- name: DS — ldapsearch over {{ ds_ldaps_port }} using the exported CA
+  ansible.builtin.command: >-
+    {{ ds_home }}/bin/ldapsearch
+    --hostname {{ ds_host }} --port {{ ds_ldaps_port }} --useSsl
+    --useJavaTrustStore {{ openam_security_dir }}/truststore
+    --trustStorePassword {{ vault_truststore_password }}
+    --bindDn {{ vault_ds_root_dn }} --bindPassword {{ vault_ds_root_password }}
+    --baseDn {{ am_identity_root_suffix }} --searchScope base "(&)" 1.1
+  become_user: "{{ ping_user }}"
+  changed_when: false
+  no_log: true
+
+# 2. AM alive.
+- name: AM — isAlive.jsp returns 200
+  ansible.builtin.uri:
+    url: "{{ am_internal_url }}/isAlive.jsp"
+    status_code: 200
+
+# 3. OAuth round-trip: client-credentials token from idm-provisioning (alpha),
+#    introspected via idm-resource-server (Top Level).
+- name: OAuth — obtain a client-credentials token as {{ oauth_provisioning_client_id }}
+  ansible.builtin.uri:
+    url: "{{ am_internal_url }}/oauth2/realms/root/realms/{{ platform_realm }}/access_token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: client_credentials
+      client_id: "{{ oauth_provisioning_client_id }}"
+      client_secret: "{{ vault_provisioning_client_secret }}"
+      scope: "fr:idm:*"
+    status_code: 200
+  register: verify_token
+  no_log: true
+
+- name: OAuth — introspect the token via {{ oauth_rs_client_id }}
+  ansible.builtin.uri:
+    url: "{{ am_internal_url }}/oauth2/introspect"
+    method: POST
+    url_username: "{{ oauth_rs_client_id }}"
+    url_password: "{{ vault_rs_client_secret }}"
+    force_basic_auth: true
+    body_format: form-urlencoded
+    body:
+      token: "{{ verify_token.json.access_token }}"
+    status_code: 200
+  register: verify_introspect
+  no_log: true
+
+- name: OAuth — assert the token is active (any-realm introspection works — G-10)
+  ansible.builtin.assert:
+    that: verify_introspect.json.active | bool
+    fail_msg: >-
+      Token introspection returned active=false. Check the
+      am-introspect-all-tokens-any-realm scope on {{ oauth_rs_client_id }}
+      and that client secrets match their consumers (G-10).
+
+# 4. IDM answers an authenticated info/ping through rsFilter.
+- name: IDM — /openidm/info/ping with the AM-issued token
+  ansible.builtin.uri:
+    url: "{{ idm_internal_url }}/openidm/info/ping"
+    headers:
+      Authorization: "Bearer {{ verify_token.json.access_token }}"
+    status_code: 200
+  register: verify_idm_ping
+  no_log: true
+
+# 5. Gateway serves the landing page and fronts everything.
+- name: Gateway — landing page on {{ gateway_https_port }}
+  ansible.builtin.uri:
+    url: "{{ gateway_url }}/"
+    validate_certs: false     # lab CA from dskeymgr; import security/ca-cert.pem to browsers
+    status_code: 200
+
+- name: Gateway — AM isAlive through the gateway
+  ansible.builtin.uri:
+    url: "{{ gateway_url }}/am/isAlive.jsp"
+    validate_certs: false
+    status_code: 200
+
+# 6. All three UIs answer through the gateway.
+- name: Gateway — UI routes return 200
+  ansible.builtin.uri:
+    url: "{{ gateway_url }}{{ item }}"
+    validate_certs: false
+    status_code: 200
+  loop:
+    - /platform-ui/
+    - /enduser-ui/
+    - /enduser-login/
+    - /platform-login/
+
+- name: Deployment summary
+  ansible.builtin.debug:
+    msg:
+      - "Ping Identity Platform is up."
+      - "Landing page:   {{ gateway_url }}/"
+      - "End-user UI:    {{ gateway_url }}/enduser-ui/?realm=/{{ platform_realm }}"
+      - "Admin UI:       {{ gateway_url }}/platform-ui/"
+      - "AM console:     {{ gateway_url }}/am (amAdmin)"
+      - "Browser CA:     {{ security_dir }}/ca-cert.pem (import into the browser)"

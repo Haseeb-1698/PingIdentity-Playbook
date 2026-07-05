@@ -1,0 +1,155 @@
+---
+- name: Extract PingDS
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: extract_zip
+  vars:
+    xz_zip: "{{ installer_zips.ds }}"
+    xz_home: "{{ ds_home }}"
+
+# --- Deployment ID discipline (G-04): generate ONCE, persist, reuse everywhere.
+- name: Check for a persisted deployment ID
+  ansible.builtin.stat:
+    path: "{{ security_dir }}/deployment-id"
+  register: ds_depid_file
+
+- name: Generate the deployment ID (first run only)
+  ansible.builtin.command: >-
+    {{ ds_home }}/bin/dskeymgr create-deployment-id
+    --deploymentIdPassword {{ vault_deployment_id_password }}
+  register: ds_depid_created
+  when: not ds_depid_file.stat.exists
+  become_user: "{{ ping_user }}"
+  no_log: true
+
+- name: Persist the deployment ID (losing it means re-issuing every cert)
+  ansible.builtin.copy:
+    content: "{{ ds_depid_created.stdout | trim }}"
+    dest: "{{ security_dir }}/deployment-id"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0600"
+  when: not ds_depid_file.stat.exists
+  no_log: true
+
+- name: Read back the deployment ID
+  ansible.builtin.slurp:
+    src: "{{ security_dir }}/deployment-id"
+  register: ds_depid_slurp
+  no_log: true
+
+- name: Set deployment ID fact
+  ansible.builtin.set_fact:
+    ds_deployment_id: "{{ ds_depid_slurp.content | b64decode | trim }}"
+  no_log: true
+
+# --- DS setup: destructive and non-idempotent — guarded (G-03). The four
+# --- shared-identity-store profiles and both --hostname flags (G-05/G-06).
+- name: Run DS setup with the four platform profiles
+  vars:
+    # DS 8.1.0's setup CLI only accepts a single --hostname (G-05)
+    ds_setup_argv:
+      - "{{ ds_home }}/setup"
+      - "--deploymentId"
+      - "{{ ds_deployment_id }}"
+      - "--deploymentIdPassword"
+      - "{{ vault_deployment_id_password }}"
+      - "--rootUserDn"
+      - "{{ vault_ds_root_dn }}"
+      - "--rootUserPassword"
+      - "{{ vault_ds_root_password }}"
+      - "--monitorUserPassword"
+      - "{{ vault_ds_monitor_password }}"
+      - "--adminConnectorPort"
+      - "{{ ds_admin_port | string }}"
+      - "--ldapPort"
+      - "{{ ds_ldap_port | string }}"
+      - "--enableStartTls"
+      - "--ldapsPort"
+      - "{{ ds_ldaps_port | string }}"
+      - "--profile"
+      - am-config
+      - "--set"
+      - "am-config/amConfigAdminPassword:{{ vault_ds_profile_password }}"
+      - "--profile"
+      - am-cts
+      - "--set"
+      - "am-cts/amCtsAdminPassword:{{ vault_ds_profile_password }}"
+      - "--set"
+      - "am-cts/tokenExpirationPolicy:am-sessions-only"
+      - "--profile"
+      - am-identity-store
+      - "--set"
+      - "am-identity-store/amIdentityStoreAdminPassword:{{ vault_ds_profile_password }}"
+      - "--profile"
+      - idm-repo
+      - "--set"
+      - "idm-repo/domain:{{ vault_idm_repo_domain }}"
+      - "--acceptLicense"
+      - "--hostname"
+      - "{{ ds_host }}"
+  ansible.builtin.command:
+    argv: "{{ ds_setup_argv }}"
+    creates: "{{ ds_home }}/config/config.ldif"
+  become_user: "{{ ping_user }}"
+  no_log: true
+
+- name: Install the PingDS systemd unit
+  ansible.builtin.template:
+    src: ping-ds.service.j2
+    dest: /etc/systemd/system/{{ ds_service_name }}.service
+    mode: "0644"
+  notify: restart ds
+
+- name: Enable and start PingDS
+  ansible.builtin.systemd:
+    name: "{{ ds_service_name }}"
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Restart DS now if its unit changed
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for LDAPS ({{ ds_ldaps_port }})
+  ansible.builtin.wait_for:
+    port: "{{ ds_ldaps_port }}"
+    timeout: 300
+
+# --- Export the CA and build AM's truststore (G-07).
+- name: Export the DS CA certificate
+  ansible.builtin.command: >-
+    {{ ds_home }}/bin/dskeymgr export-ca-cert
+    --deploymentId {{ ds_deployment_id }}
+    --deploymentIdPassword {{ vault_deployment_id_password }}
+    --outputFile {{ openam_security_dir }}/ds-ca-cert.pem
+  args:
+    creates: "{{ openam_security_dir }}/ds-ca-cert.pem"
+  become_user: "{{ ping_user }}"
+
+- name: Check whether the DS CA is already in AM's truststore
+  ansible.builtin.command: >-
+    {{ java_home }}/bin/keytool -list -alias ds-ca
+    -keystore {{ openam_security_dir }}/truststore
+    -storepass {{ vault_truststore_password }}
+  register: ds_truststore_check
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Import the DS CA into AM's truststore
+  ansible.builtin.command: >-
+    {{ java_home }}/bin/keytool -importcert -noprompt -alias ds-ca
+    -file {{ openam_security_dir }}/ds-ca-cert.pem
+    -keystore {{ openam_security_dir }}/truststore
+    -storepass {{ vault_truststore_password }}
+  when: ds_truststore_check.rc != 0
+  become_user: "{{ ping_user }}"
+  no_log: true
+
+- name: Restrict truststore ownership
+  ansible.builtin.file:
+    path: "{{ openam_security_dir }}/truststore"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"

@@ -1,0 +1,21 @@
+{
+    "name": "idm",
+    "baseURI": "http://{{ idm_host }}:{{ idm_port }}",
+    "comment": "Matches ONLY /openidm, /upload, /export — never /admin. IDM 8.1 has no bundled admin UI; a greedy /admin match here breaks the platform admin UI (G-12/G-15).",
+    "condition": "${find(request.uri.path, '(?:^/openidm)|(?:^/upload)|(?:^/export)')}",
+    "handler": {
+        "type": "Chain",
+        "config": {
+            "filters": [
+                {
+                    "comment": "Always redirect to IG rather than IDM",
+                    "type": "LocationHeaderFilter",
+                    "config": {
+                        "baseURI": "{{ gateway_url }}/"
+                    }
+                }
+            ],
+            "handler": "ReverseProxyHandler"
+        }
+    }
+}

@@ -1,0 +1,19 @@
+# Managed by Ansible
+[Unit]
+Description=PingGateway
+After=network-online.target {{ idm_service_name }}.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ ping_user }}
+Group={{ ping_group }}
+Environment=JAVA_HOME={{ java_home }}
+# Without IG_INSTANCE_DIR the gateway silently reads ~/.openig (G-14)
+Environment=IG_INSTANCE_DIR={{ gateway_instance_dir }}
+ExecStart={{ gateway_home }}/bin/start.sh {{ gateway_instance_dir }}
+TimeoutStartSec=300
+LimitNOFILE=131072
+
+[Install]
+WantedBy=multi-user.target

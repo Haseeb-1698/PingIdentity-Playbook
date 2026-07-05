@@ -1,0 +1,74 @@
+{
+  "am_url": "{{ am_internal_url }}",
+  "admin_user": "amadmin",
+  "admin_passwords": ["{{ vault_am_admin_password }}", "password"],
+  "realm": "{{ platform_realm }}",
+  "success_url": "{{ enduser_success_url }}",
+  "success_url_trees": ["PlatformRegistration", "PlatformLogin", "PlatformResetPassword"],
+  "patch_object_tree": "PlatformUpdatePassword",
+  "external_login_url_root": "{{ external_login_url_root }}",
+  "external_login_url_alpha": "{{ external_login_url_alpha }}",
+  "idrepo_settings": {
+    "sun-idrepo-ldapv3-config-search-scope": "SCOPE_ONE",
+    "sun-idrepo-ldapv3-config-users-search-attribute": "fr-idm-uuid",
+    "sun-idrepo-ldapv3-config-auth-naming-attr": "uid"
+  },
+  "delete_root_idrepo": true,
+  "services": [
+    {
+      "path": "/json/global-config/services/idm-integration",
+      "set": {
+        "enabled": true,
+        "idmDeploymentUrl": "{{ idm_internal_url }}",
+        "idmDeploymentPath": "openidm",
+        "idmProvisioningClient": "{{ oauth_provisioning_client_id }}",
+        "provisioningClientSecret": "{{ vault_provisioning_client_secret }}",
+        "useInternalOAuth2Provider": false
+      }
+    },
+    {
+      "path": "/json/global-config/services/CorsService",
+      "set": {"enabled": true}
+    },
+    {
+      "path": "/json/global-config/services/CorsService/configuration/platform-cors",
+      "create": true,
+      "create_path": "/json/global-config/services/CorsService/configuration",
+      "create_body": {"_id": "platform-cors"},
+      "set": {
+        "enabled": true,
+        "acceptedOrigins": {{ am_cors_accepted_origins | to_json }},
+        "acceptedMethods": {{ am_cors_accepted_methods | to_json }},
+        "acceptedHeaders": {{ am_cors_accepted_headers | to_json }},
+        "exposedHeaders": {{ am_cors_exposed_headers | to_json }},
+        "maxAge": {{ am_cors_max_age }},
+        "allowCredentials": true
+      }
+    },
+    {
+      "path": "/json/realms/root/realm-config/services/oauth-oidc",
+      "create": true,
+      "set": {
+        "advancedOAuth2Config.supportedScopes": ["am-introspect-all-tokens", "am-introspect-all-tokens-any-realm", "fr:idm:*", "openid"],
+        "consent.clientsCanSkipConsent": true
+      }
+    },
+    {
+      "path": "/json/realms/root/realms/{{ platform_realm }}/realm-config/services/oauth-oidc",
+      "create": true,
+      "set": {
+        "advancedOAuth2Config.supportedScopes": ["fr:idm:*", "openid"],
+        "consent.clientsCanSkipConsent": true
+      }
+    },
+    {
+      "path": "/json/realms/root/realms/{{ platform_realm }}/realm-config/services/selfServiceTrees",
+      "create": true,
+      "create_body": {"treeMapping": {"registration": "PlatformRegistration", "login": "PlatformLogin", "resetPassword": "PlatformResetPassword"}},
+      "set": {
+        "enabled": true,
+        "treeMapping": {"registration": "PlatformRegistration", "login": "PlatformLogin", "resetPassword": "PlatformResetPassword"}
+      }
+    }
+  ]
+}

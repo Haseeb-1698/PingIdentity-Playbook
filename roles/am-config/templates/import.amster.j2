@@ -1,0 +1,4 @@
+connect -k {{ amster_home }}/amster_rsa {{ am_internal_url }}
+import-config --path {{ amster_payload_dir }}/config
+import-config --path {{ am_trees_import_path }}
+:exit

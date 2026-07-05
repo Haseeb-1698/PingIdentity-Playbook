@@ -1,0 +1,6 @@
+---
+- name: restart ds
+  ansible.builtin.systemd:
+    name: "{{ ds_service_name }}"
+    daemon_reload: true
+    state: restarted

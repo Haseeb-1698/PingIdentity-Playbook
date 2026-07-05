@@ -1,0 +1,12 @@
+{
+  "metadata": {
+    "realm": "{{ item.realm }}",
+    "entityType": "ValidationService",
+    "entityId": "validation",
+    "pathParams": {},
+    "amsterVersion": "{{ amster_version }}"
+  },
+  "data": {
+    "validGotoDestinations": {{ item.goto_urls | to_json }}
+  }
+}

@@ -1,0 +1,54 @@
+---
+amster_payload_dir: "{{ amster_home }}/payload"
+
+# The Amster config payload: one rendered JSON per entity (docs/03 — the
+# bracketed entity names). Files sharing a template are rendered per realm.
+#
+# NOT in this list (field-verified 2026-07-04): OAuth2Provider (Amster
+# rejects the payload shape: "Invalid attribute specified"),
+# IdmIntegrationService / CorsService / CorsServiceConfiguration /
+# SelfServiceTrees (the Amster 8.1 CLI does not recognise these entity
+# types at all). All six are applied over plain REST by
+# am_platform_tweaks.py instead — see the "services" list in tweaks.json.j2.
+am_payload_files:
+  # Cookie Domain must be the parent domain or gateway logins loop (G-09)
+  - name: platform
+    src: platform
+  # OAuth2 clients — the exact matrix, both realms where stated (G-10)
+  - name: client-idm-resource-server-root
+    src: client-idm-resource-server
+    realm: "/"
+  - name: client-idm-provisioning-root
+    src: client-idm-provisioning
+    realm: "/"
+  - name: client-idm-provisioning-alpha
+    src: client-idm-provisioning
+    realm: "/{{ platform_realm }}"
+  - name: client-idm-admin-ui-root
+    src: client-idm-admin-ui
+    realm: "/"
+  - name: client-idm-admin-ui-alpha
+    src: client-idm-admin-ui
+    realm: "/{{ platform_realm }}"
+  - name: client-end-user-ui-root
+    src: client-end-user-ui
+    realm: "/"
+  - name: client-end-user-ui-alpha
+    src: client-end-user-ui
+    realm: "/{{ platform_realm }}"
+  # Validation Service per realm (docs/03 + gateway URLs, G-16)
+  - name: validation-service-root
+    src: validation-service
+    realm: "/"
+    goto_urls: "{{ validation_goto_urls_root }}"
+  - name: validation-service-alpha
+    src: validation-service
+    realm: "/{{ platform_realm }}"
+    goto_urls: "{{ validation_goto_urls_alpha }}"
+  # Base URL Source — fixed gateway URL, both realms (G-16)
+  - name: base-url-source-root
+    src: base-url-source
+    realm: "/"
+  - name: base-url-source-alpha
+    src: base-url-source
+    realm: "/{{ platform_realm }}"

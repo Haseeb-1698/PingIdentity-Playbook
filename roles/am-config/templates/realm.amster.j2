@@ -1,0 +1,3 @@
+connect -k {{ amster_home }}/amster_rsa {{ am_internal_url }}
+create Realms --global --body '{"name": "{{ platform_realm }}", "active": true, "parentPath": "/", "aliases": []}'
+:exit

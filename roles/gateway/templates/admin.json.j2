@@ -1,0 +1,51 @@
+{
+    "heap": [
+        {
+            "name": "TlsConf",
+            "type": "ServerTlsOptions",
+            "config": {
+                "keyManager": {
+                    "type": "SecretsKeyManager",
+                    "config": {
+                        "signingSecretId": "key.manager.secret.id",
+                        "secretsProvider": "ServerIdentityStore"
+                    }
+                }
+            }
+        },
+        {
+            "name": "SecretsPasswords",
+            "type": "FileSystemSecretStore",
+            "config": {
+                "directory": "{{ security_dir }}/",
+                "format": "PLAIN"
+            }
+        },
+        {
+            "name": "ServerIdentityStore",
+            "type": "KeyStoreSecretStore",
+            "config": {
+                "file": "{{ security_dir }}/keystore",
+                "storePasswordSecretId": "keystore.pin",
+                "secretsProvider": "SecretsPasswords",
+                "mappings": [
+                    {
+                        "secretId": "key.manager.secret.id",
+                        "aliases": [
+                            "{{ gateway_tls_alias }}"
+                        ]
+                    }
+                ]
+            }
+        }
+    ],
+    "connectors": [
+        {
+            "port": {{ gateway_http_port }}
+        },
+        {
+            "port": {{ gateway_https_port }},
+            "tls": "TlsConf"
+        }
+    ]
+}

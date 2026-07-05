@@ -1,0 +1,34 @@
+---
+# Ping Advanced Identity Software 8.1 — "Shared identity store" sample
+# https://docs.pingidentity.com/platform/8/sample-setup/deployment2.html
+#
+# Fully automated: PingDS -> PingAM (FBC + Amster) -> PingIDM -> PingGateway
+# -> Platform UIs -> verification. Ordering is strict (gotcha G-18).
+- name: Deploy the Ping Identity Platform (shared identity store)
+  hosts: ping
+  become: true
+
+  pre_tasks:
+    - name: Assert mandatory secrets are defined (vault.yml loaded)
+      ansible.builtin.assert:
+        that:
+          - vault_am_admin_password is defined
+          - vault_ds_root_password is defined
+          - vault_ds_profile_password is defined
+          - vault_deployment_id_password is defined
+          - vault_rs_client_secret is defined
+          - vault_provisioning_client_secret is defined
+        fail_msg: >-
+          group_vars/all/vault.yml is missing or incomplete. Copy the shipped
+          sample, adjust the secrets, and encrypt it with `ansible-vault
+          encrypt group_vars/all/vault.yml`.
+
+  roles:
+    - common
+    - ds
+    - tomcat-am
+    - am-config
+    - idm
+    - gateway
+    - platform-ui
+    - verify

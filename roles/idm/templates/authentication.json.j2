@@ -1,0 +1,58 @@
+{
+    "rsFilter" : {
+        "clientId" : "{{ oauth_rs_client_id }}",
+        "clientSecret" : "&{rs.client.secret|{{ vault_rs_client_secret }}}",
+        "tokenIntrospectUrl" : "{{ am_internal_url }}/oauth2/introspect",
+        "scopes" : [
+            "fr:idm:*"
+        ],
+        "cache" : {
+            "maxTimeout" : "300 seconds"
+        },
+        "augmentSecurityContext" : {
+            "type" : "text/javascript",
+            "source" : "require('auth/orgPrivileges').assignPrivilegesToUser(resource, security, properties, subjectMapping, privileges, 'privileges', 'privilegeAssignments');"
+        },
+        "subjectMapping" : [
+            {
+                "resourceTypeMapping" : {
+                    "usr" : "managed/user"
+                },
+                "propertyMapping" : {
+                    "sub" : "_id"
+                },
+                "userRoles" : "authzRoles/*",
+                "additionalUserFields" : [
+                    "adminOfOrg",
+                    "ownerOfOrg"
+                ],
+                "defaultRoles" : [
+                    "internal/role/openidm-authorized"
+                ]
+            }
+        ],
+        "staticUserMapping" : [
+            {
+                "subject" : "(usr!amAdmin)",
+                "localUser" : "internal/user/openidm-admin",
+                "roles" : [
+                    "internal/role/openidm-authorized",
+                    "internal/role/openidm-admin"
+                ]
+            },
+            {
+                "subject" : "(age!{{ oauth_provisioning_client_id }})",
+                "localUser" : "internal/user/idm-provisioning",
+                "roles" : [
+                    "internal/role/platform-provisioning"
+                ]
+            }
+        ],
+        "anonymousUserMapping" : {
+            "localUser" : "internal/user/anonymous",
+            "roles" : [
+                "internal/role/openidm-reg"
+            ]
+        }
+    }
+}

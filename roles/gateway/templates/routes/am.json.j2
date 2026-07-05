@@ -1,0 +1,20 @@
+{
+    "name": "am",
+    "baseURI": "http://{{ am_host }}:{{ am_port }}",
+    "condition": "${find(request.uri.path, '(?:^/am(?!/XUI))')}",
+    "handler": {
+        "type": "Chain",
+        "config": {
+            "filters": [
+                {
+                    "comment": "Always redirect to IG rather than AM",
+                    "type": "LocationHeaderFilter",
+                    "config": {
+                        "baseURI": "{{ gateway_url }}/"
+                    }
+                }
+            ],
+            "handler": "ReverseProxyHandler"
+        }
+    }
+}

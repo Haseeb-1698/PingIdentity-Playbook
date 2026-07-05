@@ -1,0 +1,56 @@
+# Managed by Ansible — AM 8.1 File-Based Configuration passive install (docs/08).
+# https://docs.pingidentity.com/pingam/8.1/installation/passive-install-fbc.html
+export JAVA_HOME="{{ java_home }}"
+
+# amAdmin password: passive installs boot with the default 'password'
+# (field-verified 2026-07-04: this env var is NOT picked up for amAdmin at
+# boot — login only works with 'password'). Kept as documentation of intent;
+# configure a real secret store for amAdmin before production use. The tweaks
+# helper tries the vault value first and falls back to 'password'.
+export AM_PASSWORDS_AMADMIN_CLEAR="{{ vault_am_admin_password }}"
+
+# Default test keys + secret stores (documented passive-install-fbc option).
+# Without this the FBC first boot has no keystore/secret-store baseline and
+# AM's eagerly-constructed Guice singletons (AMKeyProvider, Secrets API)
+# break all REST routing — the root cause behind G-25/G-26/G-27. Replace the
+# test keys with real secret stores when hardening beyond the sample.
+export AM_TEST_MODE=true
+
+CATALINA_OPTS="$CATALINA_OPTS -Xms1g -Xmx2g"
+
+# --- FBC bootstrap (mandatory) ---
+CATALINA_OPTS="$CATALINA_OPTS -Dcom.sun.identity.sm.sms_object_filebased_enabled=true"
+CATALINA_OPTS="$CATALINA_OPTS -Dcom.sun.identity.configuration.directory={{ am_config_dir }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.server.protocol=http"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.server.fqdn={{ am_host }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.server.port={{ am_port }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.server.context=/am"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.encryption.key={{ vault_am_encryption_key }}"
+
+# --- identity (user) store: DS am-identity-store profile over LDAPS ---
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.user.servers={{ ds_host }}:{{ ds_ldaps_port }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.user.username={{ am_identity_bind_dn }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.user.password={{ vault_ds_profile_password }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.user.ssl.enabled=true"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.user.root.suffix={{ am_identity_root_suffix }}"
+
+# --- application/policy store: DS am-config profile suffix ---
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.application.servers={{ ds_host }}:{{ ds_ldaps_port }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.application.username={{ am_config_bind_dn }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.application.password={{ vault_ds_profile_password }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.application.ssl.enabled=true"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.application.root.suffix={{ am_config_root_suffix }}"
+
+# --- external CTS: DS am-cts profile (dynamic data stays in DS — docs/08) ---
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.cts.servers={{ ds_host }}:{{ ds_ldaps_port }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.cts.username={{ am_cts_bind_dn }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.cts.password={{ vault_ds_profile_password }}"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.cts.ssl.enabled=true"
+CATALINA_OPTS="$CATALINA_OPTS -Dam.stores.cts.root.suffix={{ am_cts_root_suffix }}"
+
+# --- truststore: ABSOLUTE path or AM silently fails to reach DS (G-07) ---
+CATALINA_OPTS="$CATALINA_OPTS -Djavax.net.ssl.trustStore={{ openam_security_dir }}/truststore"
+CATALINA_OPTS="$CATALINA_OPTS -Djavax.net.ssl.trustStorePassword={{ vault_truststore_password }}"
+CATALINA_OPTS="$CATALINA_OPTS -Djavax.net.ssl.trustStoreType=JKS"
+
+export CATALINA_OPTS

@@ -1,0 +1,25 @@
+{
+  "metadata": {
+    "realm": "{{ item.realm }}",
+    "entityType": "OAuth2Clients",
+    "entityId": "{{ oauth_rs_client_id }}",
+    "pathParams": {},
+    "amsterVersion": "{{ amster_version }}"
+  },
+  "data": {
+    "coreOAuth2ClientConfig": {
+      "status": "Active",
+      "clientType": "Confidential",
+      "userpassword": "{{ vault_rs_client_secret }}",
+      "scopes": [
+        "am-introspect-all-tokens",
+        "am-introspect-all-tokens-any-realm"
+      ],
+      "defaultScopes": [],
+      "redirectionUris": []
+    },
+    "advancedOAuth2ClientConfig": {
+      "tokenEndpointAuthMethod": "client_secret_basic"
+    }
+  }
+}

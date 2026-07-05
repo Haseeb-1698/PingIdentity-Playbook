@@ -1,0 +1,6 @@
+---
+- name: restart gateway
+  ansible.builtin.systemd:
+    name: "{{ gateway_service_name }}"
+    daemon_reload: true
+    state: restarted

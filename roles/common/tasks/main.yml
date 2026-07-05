@@ -1,0 +1,153 @@
+---
+- name: Assert this is a RedHat-family host (Rocky Linux 9 target)
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == "RedHat"
+    fail_msg: "This playbook targets Rocky Linux 9 (RedHat family) hosts."
+
+- name: Install required packages (Java 25, unzip, podman + docker shim)
+  ansible.builtin.package:
+    name:
+      - "{{ java_package }}"
+      - "{{ java_package }}-devel"
+      - unzip
+      - tar
+      - podman
+      - podman-docker
+      - python3
+      - openssh
+      - policycoreutils-python-utils
+    state: present
+
+- name: Read Java version
+  ansible.builtin.command: "{{ java_home }}/bin/java -version"
+  register: common_java_version
+  changed_when: false
+
+- name: Assert the JVM is Java 25 (G-01 — 8.1 fails on Java 21, class file v69)
+  ansible.builtin.assert:
+    that:
+      - common_java_version.stderr is search('version "25')
+    fail_msg: >-
+      {{ java_home }}/bin/java is not Java 25:
+      {{ common_java_version.stderr | default('') }}
+
+- name: Create service group
+  ansible.builtin.group:
+    name: "{{ ping_group }}"
+    state: present
+
+- name: Create service user
+  ansible.builtin.user:
+    name: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    shell: /bin/bash
+    state: present
+
+- name: Map platform hostnames to {{ hosts_entries_ip }} in /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED — ping platform hostnames"
+    block: "{{ hosts_entries_ip }}  {{ platform_hostnames | join(' ') }}"
+  when: manage_etc_hosts
+
+- name: Create the canonical directory tree
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0750"
+  loop:
+    - "{{ ping_root }}"
+    - "{{ installer_dir }}"
+    - "{{ am_config_dir }}"
+    - "{{ gateway_instance_dir }}"
+    - "{{ gateway_instance_dir }}/config"
+    - "{{ gateway_instance_dir }}/config/routes"
+    - "{{ platform_dir }}"
+    - "{{ security_dir }}"
+    - "{{ openam_security_dir }}"
+    - "{{ tools_dir }}"
+    - "{{ staging_dir }}"
+
+- name: Copy installer zips from the control node ({{ installer_src_dir | default('unset') }})
+  ansible.builtin.copy:
+    src: "{{ installer_src_dir }}/{{ item.value }}"
+    dest: "{{ installer_dir }}/{{ item.value }}"
+    owner: "{{ ping_user }}"
+    group: "{{ ping_group }}"
+    mode: "0640"
+  loop: "{{ installer_zips | dict2items }}"
+  loop_control:
+    label: "{{ item.value }}"
+  # per-zip: copy only what is staged locally; the assert below still
+  # guarantees the full set is present on the target
+  when:
+    - installer_src_dir is defined
+    - (installer_src_dir ~ '/' ~ item.value) is exists
+
+- name: Check that every installer zip is present
+  ansible.builtin.stat:
+    path: "{{ installer_dir }}/{{ item.value }}"
+  loop: "{{ installer_zips | dict2items }}"
+  loop_control:
+    label: "{{ item.value }}"
+  register: common_installer_stats
+
+- name: Assert installers exist (they are NOT downloadable — brief req. 6)
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: >-
+      Missing installer {{ item.item.value }} in {{ installer_dir }}.
+      Supply the official zip (or set installer_src_dir to a local directory
+      holding them). The playbook never downloads Ping installers.
+  loop: "{{ common_installer_stats.results }}"
+  loop_control:
+    label: "{{ item.item.value }}"
+
+- name: Install environment profile (/etc/profile.d/ping.sh)
+  ansible.builtin.template:
+    src: ping-profile.sh.j2
+    dest: /etc/profile.d/ping.sh
+    mode: "0644"
+
+# --- SELinux stance (G-20): keep enforcing; label executables under the ping
+# --- tree bin_t so systemd may execute them from /home.
+- name: SELinux file contexts for service executables
+  community.general.sefcontext:
+    target: "{{ item }}"
+    setype: bin_t
+    state: present
+  loop:
+    - "{{ ping_root }}/[^/]+/bin(/.*)?"
+    - "{{ idm_home }}/(startup|shutdown)\\.sh"
+  register: common_sefcontext
+  when:
+    - manage_selinux
+    - ansible_selinux.status | default('disabled') == 'enabled'
+
+- name: Apply SELinux contexts (restorecon)
+  ansible.builtin.command: restorecon -R {{ ping_root }}
+  when:
+    - manage_selinux
+    - ansible_selinux.status | default('disabled') == 'enabled'
+  changed_when: common_sefcontext is changed
+
+# --- firewalld (G-20): only the gateway HTTPS port is opened; everything else
+# --- stays host-internal.
+- name: Ensure firewalld is running
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+  when: manage_firewalld
+
+- name: Open public ports (gateway only)
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewall_open_ports }}"
+  when: manage_firewalld
