@@ -1,5 +1,9 @@
 ---
 # ansible-galaxy collection install -r requirements.yml
+# Pinned below the releases that drop ansible-core 2.14 support (what
+# RHEL/Rocky 9 ships as the ansible-core package).
 collections:
   - name: ansible.posix        # firewalld
+    version: "<1.6.0"
   - name: community.general    # sefcontext
+    version: "<9.0.0"
